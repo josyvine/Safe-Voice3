@@ -21,6 +21,7 @@ import android.util.Log;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.widget.Button;
+import android.widget.EditText;
 import android.widget.ImageButton;
 import android.widget.ProgressBar;
 import android.widget.RelativeLayout;
@@ -39,6 +40,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.Serializable;
+import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -233,6 +235,7 @@ public class FileDeleteActivity extends Activity {
         final AlertDialog dialog = builder.create();
 
         Button detailsButton = dialogView.findViewById(R.id.button_details);
+        Button sendToDropZoneButton = dialogView.findViewById(R.id.button_send_to_drop_zone);
         Button compressButton = dialogView.findViewById(R.id.button_compress);
         Button copyButton = dialogView.findViewById(R.id.button_copy);
         Button moveButton = dialogView.findViewById(R.id.button_move);
@@ -247,6 +250,18 @@ public class FileDeleteActivity extends Activity {
 					dialog.dismiss();
 				}
 			});
+        
+        sendToDropZoneButton.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                if (selectedFiles.size() == 1) {
+                    showSendToDropDialog(selectedFiles.get(0));
+                } else {
+                    Toast.makeText(FileDeleteActivity.this, "HFM Drop currently supports sending a single file at a time.", Toast.LENGTH_LONG).show();
+                }
+                dialog.dismiss();
+            }
+        });
 
         compressButton.setOnClickListener(new View.OnClickListener() {
 				@Override
@@ -325,7 +340,6 @@ public class FileDeleteActivity extends Activity {
 
         final AlertDialog dialog = builder.create();
 
-        // Populate basic details
         if (files.size() == 1) {
             File file = files.get(0);
             StringBuilder sb = new StringBuilder();
@@ -374,6 +388,70 @@ public class FileDeleteActivity extends Activity {
 			});
 
         dialog.show();
+    }
+
+    private void showSendToDropDialog(final File fileToSend) {
+        AlertDialog.Builder builder = new AlertDialog.Builder(this);
+        LayoutInflater inflater = this.getLayoutInflater();
+        View dialogView = inflater.inflate(R.layout.dialog_send_drop, null);
+        final EditText receiverUsernameInput = dialogView.findViewById(R.id.edit_text_receiver_username);
+
+        builder.setView(dialogView)
+                .setPositiveButton("Send", new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface dialog, int id) {
+                        String receiverUsername = receiverUsernameInput.getText().toString().trim();
+                        if (receiverUsername.isEmpty()) {
+                            Toast.makeText(FileDeleteActivity.this, "Receiver username cannot be empty.", Toast.LENGTH_SHORT).show();
+                        } else {
+                            showSenderWarningDialog(receiverUsername, fileToSend);
+                        }
+                    }
+                })
+                .setNegativeButton("Cancel", null);
+        builder.create().show();
+    }
+
+    private void showSenderWarningDialog(final String receiverUsername, final File fileToSend) {
+        final String secretNumber = generateSecretNumber();
+
+        new AlertDialog.Builder(this)
+                .setTitle("Important: Connection Stability")
+                .setMessage("You are about to act as a temporary server for this file transfer.\n\n"
+                        + "Please keep the app open and maintain a stable internet connection until the transfer is complete.\n\n"
+                        + "Your Secret Number for this transfer is:\n" + secretNumber + "\n\nShare this number with the receiver.")
+                .setPositiveButton("I Understand, Start Sending", new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface dialog, int which) {
+                        startSenderService(receiverUsername, secretNumber, fileToSend);
+                    }
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void startSenderService(String receiverUsername, String secretNumber, File fileToSend) {
+        if (fileToSend == null || !fileToSend.exists()) {
+            Toast.makeText(this, "Error: File to send does not exist.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        Intent intent = new Intent(this, SenderService.class);
+        intent.setAction(SenderService.ACTION_START_SEND);
+        intent.putExtra(SenderService.EXTRA_FILE_PATH, fileToSend.getAbsolutePath());
+        intent.putExtra(SenderService.EXTRA_RECEIVER_USERNAME, receiverUsername);
+        intent.putExtra(SenderService.EXTRA_SECRET_NUMBER, secretNumber);
+        ContextCompat.startForegroundService(this, intent);
+    }
+
+    private String generateSecretNumber() {
+        SecureRandom random = new SecureRandom();
+        byte[] bytes = new byte[16];
+        random.nextBytes(bytes);
+        StringBuilder sb = new StringBuilder();
+        for (byte b : bytes) {
+            sb.append(String.format("%02x", b));
+        }
+        return sb.toString();
     }
 
 
@@ -718,25 +796,19 @@ public class FileDeleteActivity extends Activity {
 
                     boolean moveSuccess = false;
 
-                    // First, try a simple rename. This is fast and will work for same-volume moves.
                     if (sourceFile.renameTo(destFile)) {
                         moveSuccess = true;
                     } else {
-                        // If rename fails, it's likely a cross-volume move. Fall back to copy-then-delete.
                         Log.w("FileDeleteActivity", "renameTo failed for " + sourceFile.getAbsolutePath() + ". Falling back to copy-delete.");
                         if (StorageUtils.copyFile(context, sourceFile, destFile)) {
-                            // Copy was successful, now delete the original.
                             if (StorageUtils.deleteFile(context, sourceFile)) {
                                 moveSuccess = true;
                             } else {
-                                // CRITICAL: If the original can't be deleted, we must delete the copy
-                                // to avoid duplicating the file.
                                 Log.e("FileDeleteActivity", "Failed to delete original file " + sourceFile.getAbsolutePath() + " after copy. Deleting copied file to prevent duplication.");
                                 destFile.delete();
                                 moveSuccess = false;
                             }
                         } else {
-                            // The copy operation failed.
                             Log.e("FileDeleteActivity", "Copy-delete fallback failed to copy file: " + sourceFile.getAbsolutePath());
                             moveSuccess = false;
                         }
@@ -764,8 +836,6 @@ public class FileDeleteActivity extends Activity {
                 Toast.makeText(context, movedFiles.size() + " file(s) moved to Recycle Bin.", Toast.LENGTH_LONG).show();
             }
 
-            // Since this activity is designed to close after an operation, we just signal success.
-            // The calling activity will handle the refresh.
             if (!movedFiles.isEmpty()) {
                 Intent resultIntent = new Intent();
                 setResult(Activity.RESULT_OK, resultIntent);
