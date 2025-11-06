@@ -22,11 +22,14 @@ import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
 import com.google.android.gms.tasks.OnCompleteListener;
+import com.google.android.gms.tasks.OnFailureListener;
+import com.google.android.gms.tasks.OnSuccessListener;
 import com.google.android.gms.tasks.Task;
 import com.google.firebase.auth.AuthResult;
 import com.google.firebase.auth.FirebaseAuth;
 import com.google.firebase.auth.FirebaseUser;
 import com.google.firebase.firestore.DocumentChange;
+import com.google.firebase.firestore.DocumentReference;
 import com.google.firebase.firestore.DocumentSnapshot;
 import com.google.firebase.firestore.EventListener;
 import com.google.firebase.firestore.FirebaseFirestore;
@@ -261,16 +264,38 @@ public class HFMDropActivity extends Activity {
     }
 
     private void handleAccept(final DropRequest request) {
+        if (currentUser == null) {
+            Toast.makeText(this, "Authentication error. Please restart the app.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        
+        // --- THIS IS THE UPDATE ---
+        // Add the receiver's ID to the document to satisfy the new security rules.
         Map<String, Object> updates = new HashMap<>();
         updates.put("status", "accepted");
-        db.collection("drop_requests").document(request.id).update(updates);
+        updates.put("receiverId", currentUser.getUid());
 
-        Intent intent = new Intent(this, DownloadService.class);
-        intent.putExtra("drop_request_id", request.id);
-        intent.putExtra("sender_id", request.senderId);
-        intent.putExtra("filename", request.filename);
-        intent.putExtra("filesize", request.filesize);
-        ContextCompat.startForegroundService(this, intent);
+        db.collection("drop_requests").document(request.id).update(updates)
+            .addOnSuccessListener(new OnSuccessListener<Void>() {
+                @Override
+                public void onSuccess(Void aVoid) {
+                    Log.d(TAG, "Drop request accepted. Starting download service.");
+                    Intent intent = new Intent(HFMDropActivity.this, DownloadService.class);
+                    intent.putExtra("drop_request_id", request.id);
+                    intent.putExtra("sender_id", request.senderId);
+                    intent.putExtra("filename", request.filename);
+                    intent.putExtra("filesize", request.filesize);
+                    ContextCompat.startForegroundService(HFMDropActivity.this, intent);
+                }
+            })
+            .addOnFailureListener(new OnFailureListener() {
+                @Override
+                public void onFailure(@NonNull Exception e) {
+                    Log.e(TAG, "Failed to accept drop request", e);
+                    Toast.makeText(HFMDropActivity.this, "Failed to accept request: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+                }
+            });
+
 
         // Remove from list and update UI immediately
         requestList.remove(request);
@@ -303,6 +328,7 @@ public class HFMDropActivity extends Activity {
         public String filename;
         public long filesize;
         public String status;
+        public String receiverId; // Added for security rules
 
         public DropRequest() {} // Needed for Firestore
     }
