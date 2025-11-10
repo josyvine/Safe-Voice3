@@ -312,64 +312,37 @@ public class HFMDropActivity extends Activity {
             Toast.makeText(this, "Authentication error. Please restart the app.", Toast.LENGTH_SHORT).show();
             return;
         }
-        
-        final AlertDialog.Builder builder = new AlertDialog.Builder(this);
-        builder.setView(R.layout.dialog_progress_simple);
-        builder.setCancelable(false);
-        final AlertDialog progressDialog = builder.create();
-        progressDialog.show();
-        
-        new Thread(new Runnable() {
-            @Override
-            public void run() {
-                final SenderService.StunClient.StunResult stunResult = SenderService.StunClient.getPublicIpAddress();
 
-                runOnUiThread(new Runnable() {
+        Map<String, Object> updates = new HashMap<>();
+        updates.put("status", "accepted");
+        updates.put("receiverId", currentUser.getUid());
+
+        db.collection("drop_requests").document(request.id).update(updates)
+                .addOnSuccessListener(new OnSuccessListener<Void>() {
                     @Override
-                    public void run() {
-                        progressDialog.dismiss();
+                    public void onSuccess(Void aVoid) {
+                        Log.d(TAG, "Drop request accepted and updated. Starting download service.");
 
-                        if (stunResult == null) {
-                            showErrorDialog("Network discovery failed. Could not determine your public IP address to send back to the sender.");
-                            return;
-                        }
+                        Intent serviceIntent = new Intent(HFMDropActivity.this, DownloadService.class);
+                        serviceIntent.putExtra("drop_request_id", request.id);
+                        serviceIntent.putExtra("magnet_link", request.magnetLink);
+                        serviceIntent.putExtra("original_filename", request.filename);
+                        serviceIntent.putExtra("cloaked_filename", request.cloakedFilename);
+                        serviceIntent.putExtra("filesize", request.filesize);
+                        ContextCompat.startForegroundService(HFMDropActivity.this, serviceIntent);
 
-                        Map<String, Object> updates = new HashMap<>();
-                        updates.put("status", "accepted");
-                        updates.put("receiverId", currentUser.getUid());
-                        updates.put("receiverPublicIp", stunResult.publicIp);
-                        updates.put("receiverPublicPort", stunResult.publicPort);
-
-                        db.collection("drop_requests").document(request.id).update(updates)
-                            .addOnSuccessListener(new OnSuccessListener<Void>() {
-                                @Override
-                                public void onSuccess(Void aVoid) {
-                                    Log.d(TAG, "Drop request accepted and updated. Starting download service.");
-
-                                    Intent serviceIntent = new Intent(HFMDropActivity.this, DownloadService.class);
-                                    serviceIntent.putExtra("drop_request_id", request.id);
-                                    serviceIntent.putExtra("sender_id", request.senderId);
-                                    serviceIntent.putExtra("original_filename", request.filename);
-                                    serviceIntent.putExtra("cloaked_filename", request.cloakedFilename);
-                                    serviceIntent.putExtra("filesize", request.filesize);
-                                    ContextCompat.startForegroundService(HFMDropActivity.this, serviceIntent);
-                                    
-                                    Intent progressIntent = new Intent(HFMDropActivity.this, DropProgressActivity.class);
-                                    progressIntent.putExtra("is_sender", false);
-                                    startActivity(progressIntent);
-                                }
-                            })
-                            .addOnFailureListener(new OnFailureListener() {
-                                @Override
-                                public void onFailure(@NonNull Exception e) {
-                                    Log.e(TAG, "Failed to accept drop request", e);
-                                    Toast.makeText(HFMDropActivity.this, "Failed to accept request: " + e.getMessage(), Toast.LENGTH_SHORT).show();
-                                }
-                            });
+                        Intent progressIntent = new Intent(HFMDropActivity.this, DropProgressActivity.class);
+                        progressIntent.putExtra("is_sender", false);
+                        startActivity(progressIntent);
+                    }
+                })
+                .addOnFailureListener(new OnFailureListener() {
+                    @Override
+                    public void onFailure(@NonNull Exception e) {
+                        Log.e(TAG, "Failed to accept drop request", e);
+                        Toast.makeText(HFMDropActivity.this, "Failed to accept request: " + e.getMessage(), Toast.LENGTH_SHORT).show();
                     }
                 });
-            }
-        }).start();
 
         requestList.remove(request);
         adapter.notifyDataSetChanged();
@@ -393,19 +366,13 @@ public class HFMDropActivity extends Activity {
 
     public static class DropRequest {
         public String id;
-        public String senderId;
         public String senderUsername;
         public String receiverUsername;
         public String filename;
         public String cloakedFilename;
         public long filesize;
         public String status;
-        public String receiverId;
-
-        public String receiverPublicIp;
-        // --- THIS IS THE FIX ---
-        // Changed from primitive 'long' to wrapper 'Long' to allow null values from Firestore.
-        public Long receiverPublicPort;
+        public String magnetLink;
 
         public DropRequest() {}
     }
