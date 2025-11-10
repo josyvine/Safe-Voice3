@@ -21,6 +21,8 @@ allprojects {
         mavenCentral()
         // Jitpack is sometimes needed for other libraries.
         maven { url "https://jitpack.io" }
+        // ADDED: FrostWire Maven for jlibtorrent (stable libtorrent4j fork with Android natives)
+        maven { url 'https://dl.frostwire.com/maven' }
     }
 }
 
