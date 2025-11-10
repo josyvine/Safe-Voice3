@@ -1,4 +1,4 @@
-// Top-level build file where you can add configuration options common to all sub-projects/modules.
+// Top-level build file where you can add configuration options common to all sub-projects/modules.  
 buildscript {
     repositories {
         // Use the modern, required repositories. jcenter is shut down.
@@ -19,8 +19,6 @@ allprojects {
         // Ensure all parts of the project use the modern repositories.
         google()
         mavenCentral()
-        // --- THIS IS YOUR CORRECT FIX: ADDING THE REQUIRED CUSTOM REPOSITORY ---
-        maven { url 'https://maven.libtorrent4j.org/releases' }
         // Jitpack is sometimes needed for other libraries.
         maven { url "https://jitpack.io" }
     }
