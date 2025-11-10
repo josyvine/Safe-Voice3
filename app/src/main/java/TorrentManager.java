@@ -15,6 +15,7 @@ import org.libtorrent4j.TorrentHandle;
 import org.libtorrent4j.TorrentInfo;
 import org.libtorrent4j.TorrentStatus;
 import org.libtorrent4j.alerts.Alert;
+import org.libtorrent4j.alerts.AlertType;
 import org.libtorrent4j.alerts.StateUpdateAlert;
 import org.libtorrent4j.alerts.TorrentErrorAlert;
 import org.libtorrent4j.alerts.TorrentFinishedAlert;
@@ -45,25 +46,26 @@ public class TorrentManager {
         sessionManager.addListener(new AlertListener() {
             @Override
             public int[] types() {
-                // CORRECT API: Get the type ID from the static alertTypeId() method for each alert class.
+                // CORRECT API: Use the AlertType enum to get the integer values.
                 return new int[]{
-                        StateUpdateAlert.alertTypeId(),
-                        TorrentFinishedAlert.alertTypeId(),
-                        TorrentErrorAlert.alertTypeId()
+                        AlertType.STATE_UPDATE.swig(),
+                        AlertType.TORRENT_FINISHED.swig(),
+                        AlertType.TORRENT_ERROR.swig()
                 };
             }
 
             @Override
             public void alert(Alert<?> alert) {
-                // CORRECT API: Switch on the integer type of the alert.
-                int alertType = alert.type().swig();
-
-                if (alertType == StateUpdateAlert.alertTypeId()) {
-                    handleStateUpdate((StateUpdateAlert) alert);
-                } else if (alertType == TorrentFinishedAlert.alertTypeId()) {
-                    handleTorrentFinished((TorrentFinishedAlert) alert);
-                } else if (alertType == TorrentErrorAlert.alertTypeId()) {
-                    handleTorrentError((TorrentErrorAlert) alert);
+                switch (alert.type()) {
+                    case STATE_UPDATE:
+                        handleStateUpdate((StateUpdateAlert) alert);
+                        break;
+                    case TORRENT_FINISHED:
+                        handleTorrentFinished((TorrentFinishedAlert) alert);
+                        break;
+                    case TORRENT_ERROR:
+                        handleTorrentError((TorrentErrorAlert) alert);
+                        break;
                 }
             }
         });
@@ -85,8 +87,8 @@ public class TorrentManager {
 
     private void handleStateUpdate(StateUpdateAlert alert) {
         for (TorrentStatus status : alert.status()) {
-            // CORRECT API: .infoHash() is now .infoHashes().v1() for the v1 hash.
-            String dropRequestId = hashToIdMap.get(status.infoHashes().v1());
+            // CORRECT API: The method is .infoHash()
+            String dropRequestId = hashToIdMap.get(status.infoHash());
             if (dropRequestId != null) {
                 Intent intent = new Intent(DropProgressActivity.ACTION_UPDATE_STATUS);
                 intent.putExtra(DropProgressActivity.EXTRA_STATUS_MAJOR, status.isSeeding() ? "Sending File..." : "Receiving File...");
@@ -101,7 +103,7 @@ public class TorrentManager {
 
     private void handleTorrentFinished(TorrentFinishedAlert alert) {
         TorrentHandle handle = alert.handle();
-        String dropRequestId = hashToIdMap.get(handle.infoHashes().v1());
+        String dropRequestId = hashToIdMap.get(handle.infoHash());
         Log.d(TAG, "Torrent finished for request ID: " + dropRequestId);
 
         if (dropRequestId != null) {
@@ -115,9 +117,9 @@ public class TorrentManager {
 
     private void handleTorrentError(TorrentErrorAlert alert) {
         TorrentHandle handle = alert.handle();
-        String dropRequestId = hashToIdMap.get(handle.infoHashes().v1());
-        // CORRECT API: The error message is now directly on the alert's message() method.
-        String errorMsg = alert.message();
+        String dropRequestId = hashToIdMap.get(handle.infoHash());
+        // CORRECT API: Get the ErrorCode object, then get its message.
+        String errorMsg = alert.error().message();
         Log.e(TAG, "Torrent error for request ID " + dropRequestId + ": " + errorMsg);
 
         if (dropRequestId != null) {
@@ -138,23 +140,25 @@ public class TorrentManager {
             return null;
         }
 
-        // CORRECT API: Create a TorrentInfo object from a file.
-        TorrentInfo torrentInfo = new TorrentInfo(file);
+        // CORRECT API: Use a constructor for TorrentInfo.
+        final TorrentInfo torrentInfo = new TorrentInfo(file);
         
-        // CORRECT API: The magnet link is created from the TorrentInfo object.
-        String magnetLink = torrentInfo.makeMagnetUri();
-
-        AddTorrentParams params = AddTorrentParams.parseMagnetUri(magnetLink);
-        // CORRECT API: .savePath() takes a String.
-        params.savePath(file.getParentFile().getAbsolutePath());
-
-        // CORRECT API: .addTorrent() is now .download().
-        sessionManager.download(params);
-        TorrentHandle handle = sessionManager.findTorrent(torrentInfo.infoHashes().v1());
+        AddTorrentParams params = new AddTorrentParams();
+        // CORRECT API: The method is .torrentInfo(ti)
+        params.torrentInfo(torrentInfo);
+        // CORRECT API: The method is .savePath(string)
+        params.savePath(file.getParent());
+        
+        // CORRECT API: The method is .addTorrent(params)
+        sessionManager.addTorrent(params);
+        // CORRECT API: The method is .findTorrent(hash)
+        TorrentHandle handle = sessionManager.findTorrent(torrentInfo.infoHash());
 
         if (handle != null) {
             activeTorrents.put(dropRequestId, handle);
-            hashToIdMap.put(handle.infoHashes().v1(), dropRequestId);
+            hashToIdMap.put(handle.infoHash(), dropRequestId);
+            // CORRECT API: The method is .magnetUri()
+            String magnetLink = handle.magnetUri();
             Log.d(TAG, "Started seeding for request ID " + dropRequestId + ". Magnet: " + magnetLink);
             return magnetLink;
         } else {
@@ -168,16 +172,16 @@ public class TorrentManager {
             saveDirectory.mkdirs();
         }
 
-        // CORRECT API: .parseMagnetUri is a static method on AddTorrentParams.
-        AddTorrentParams params = AddTorrentParams.parseMagnetUri(magnetLink);
+        // CORRECT API: This method is static on SessionManager.
+        AddTorrentParams params = sessionManager.parseMagnetUri(magnetLink);
         params.savePath(saveDirectory.getAbsolutePath());
-        sessionManager.download(params);
-        // CORRECT API: .infoHash() on params is now .infoHashes().v1().
-        TorrentHandle handle = sessionManager.findTorrent(params.infoHashes().v1());
+        sessionManager.addTorrent(params);
+        // CORRECT API: The method is .infoHash()
+        TorrentHandle handle = sessionManager.findTorrent(params.infoHash());
 
         if (handle != null) {
             activeTorrents.put(dropRequestId, handle);
-            hashToIdMap.put(handle.infoHashes().v1(), dropRequestId);
+            hashToIdMap.put(handle.infoHash(), dropRequestId);
             Log.d(TAG, "Started download for request ID: " + dropRequestId);
         } else {
             Log.e(TAG, "Failed to get TorrentHandle after adding download from magnet link.");
@@ -188,14 +192,14 @@ public class TorrentManager {
         if (handle == null || !handle.isValid()) {
             return;
         }
-        Sha1Hash hash = handle.infoHashes().v1();
+        Sha1Hash hash = handle.infoHash();
         String dropRequestId = hashToIdMap.get(hash);
 
         if (dropRequestId != null) {
             activeTorrents.remove(dropRequestId);
             hashToIdMap.remove(hash);
         }
-        // CORRECT API: .removeTorrent(handle) is the same.
+        // CORRECT API: The method is indeed .removeTorrent(handle).
         sessionManager.removeTorrent(handle);
         Log.d(TAG, "Cleaned up and removed torrent for request ID: " + dropRequestId);
     }
