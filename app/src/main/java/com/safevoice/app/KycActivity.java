@@ -1,6 +1,8 @@
 package com.safevoice.app;
 
 import android.annotation.SuppressLint;
+import android.app.AlertDialog;
+import android.content.DialogInterface;
 import android.graphics.Bitmap;
 import android.graphics.Rect;
 import android.media.Image;
@@ -41,6 +43,8 @@ import com.safevoice.app.utils.FaceVerifier;
 import com.safevoice.app.utils.ImageUtils;
 
 import java.io.IOException;
+import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -98,12 +102,18 @@ public class KycActivity extends AppCompatActivity {
 
     private void startCamera() {
         cameraProviderFuture = ProcessCameraProvider.getInstance(this);
-        cameraProviderFuture.addListener(() -> {
-            try {
-                ProcessCameraProvider cameraProvider = cameraProviderFuture.get();
-                bindCameraUseCases(cameraProvider);
-            } catch (Exception e) {
-                Log.e(TAG, "Failed to start camera.", e);
+        cameraProviderFuture.addListener(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    ProcessCameraProvider cameraProvider = cameraProviderFuture.get();
+                    bindCameraUseCases(cameraProvider);
+                } catch (Exception e) {
+                    // --- THIS IS THE FIX ---
+                    // Catch any exception during camera initialization and show a detailed report.
+                    Log.e(TAG, "Failed to start camera.", e);
+                    showErrorDialog(e);
+                }
             }
         }, ContextCompat.getMainExecutor(this));
     }
@@ -126,22 +136,25 @@ public class KycActivity extends AppCompatActivity {
     }
 
     private void updateUIForState() {
-        runOnUiThread(() -> {
-            switch (currentState) {
-                case SCANNING_ID:
-                    binding.textInstructions.setText(R.string.kyc_instructions_id);
-                    break;
-                case SCANNING_FACE:
-                    binding.textInstructions.setText(R.string.kyc_instructions_face);
-                    startCamera(); // Re-bind the camera to switch to the front lens
-                    break;
-                case VERIFYING:
-                    binding.textInstructions.setText(R.string.kyc_status_verifying);
-                    binding.progressBar.setVisibility(View.VISIBLE);
-                    break;
-                case COMPLETE:
-                    binding.progressBar.setVisibility(View.GONE);
-                    break;
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                switch (currentState) {
+                    case SCANNING_ID:
+                        binding.textInstructions.setText(R.string.kyc_instructions_id);
+                        break;
+                    case SCANNING_FACE:
+                        binding.textInstructions.setText(R.string.kyc_instructions_face);
+                        startCamera(); // Re-bind the camera to switch to the front lens
+                        break;
+                    case VERIFYING:
+                        binding.textInstructions.setText(R.string.kyc_status_verifying);
+                        binding.progressBar.setVisibility(View.VISIBLE);
+                        break;
+                    case COMPLETE:
+                        binding.progressBar.setVisibility(View.GONE);
+                        break;
+                }
             }
         });
     }
@@ -183,68 +196,70 @@ public class KycActivity extends AppCompatActivity {
         }
 
         private Task<Void> processIdCardImage(InputImage image, ImageProxy imageProxy) {
-            // Only run the tasks if we still need the data to avoid redundant work
             Task<Text> textRecognitionTask = (verifiedName == null) ? textRecognizer.process(image) : Tasks.forResult(null);
             Task<List<Face>> faceDetectionTask = (idCardEmbedding == null) ? faceDetector.process(image) : Tasks.forResult(null);
 
             return Tasks.whenAll(textRecognitionTask, faceDetectionTask)
-                .addOnSuccessListener(aVoid -> {
-                    // Process Text Result only if we don't have a name yet
-                    if (verifiedName == null) {
-                        Text visionText = textRecognitionTask.getResult();
-                        if (visionText != null) {
-                            String name = extractNameFromText(visionText);
-                            if (name != null) {
-                                Log.i(TAG, "Successfully extracted name: " + name);
-                                verifiedName = name;
+                .addOnSuccessListener(new OnSuccessListener<Void>() {
+                    @Override
+                    public void onSuccess(Void aVoid) {
+                        if (verifiedName == null) {
+                            Text visionText = textRecognitionTask.getResult();
+                            if (visionText != null) {
+                                String name = extractNameFromText(visionText);
+                                if (name != null) {
+                                    Log.i(TAG, "Successfully extracted name: " + name);
+                                    verifiedName = name;
+                                }
                             }
                         }
-                    }
 
-                    // Process Face Result only if we don't have an embedding yet
-                    if (idCardEmbedding == null) {
-                        List<Face> faces = faceDetectionTask.getResult();
-                        if (faces != null && !faces.isEmpty()) {
-                            Face idFace = faces.get(0);
-                            Bitmap fullBitmap = ImageUtils.getBitmap(imageProxy);
-                            if (fullBitmap != null) {
-                                Bitmap croppedFace = cropBitmapToFace(fullBitmap, idFace.getBoundingBox());
-                                idCardEmbedding = faceVerifier.getFaceEmbedding(croppedFace);
-                                Log.i(TAG, "Successfully generated ID card embedding.");
+                        if (idCardEmbedding == null) {
+                            List<Face> faces = faceDetectionTask.getResult();
+                            if (faces != null && !faces.isEmpty()) {
+                                Face idFace = faces.get(0);
+                                Bitmap fullBitmap = ImageUtils.getBitmap(imageProxy);
+                                if (fullBitmap != null) {
+                                    Bitmap croppedFace = cropBitmapToFace(fullBitmap, idFace.getBoundingBox());
+                                    idCardEmbedding = faceVerifier.getFaceEmbedding(croppedFace);
+                                    Log.i(TAG, "Successfully generated ID card embedding.");
+                                }
                             }
                         }
-                    }
 
-                    // If we have now collected both pieces of information, move to the next state
-                    if (verifiedName != null && idCardEmbedding != null) {
-                        Log.i(TAG, "ID Scan Complete! Proceeding to face scan.");
-                        currentState = KycState.SCANNING_FACE;
-                        updateUIForState();
+                        if (verifiedName != null && idCardEmbedding != null) {
+                            Log.i(TAG, "ID Scan Complete! Proceeding to face scan.");
+                            currentState = KycState.SCANNING_FACE;
+                            updateUIForState();
+                        }
                     }
                 });
         }
 
         private Task<List<Face>> processLiveFaceImage(InputImage image, ImageProxy imageProxy) {
             return faceDetector.process(image)
-                .addOnSuccessListener(faces -> {
-                    if (!faces.isEmpty()) {
-                        currentState = KycState.VERIFYING;
-                        updateUIForState();
+                .addOnSuccessListener(new OnSuccessListener<List<Face>>() {
+                    @Override
+                    public void onSuccess(List<Face> faces) {
+                        if (!faces.isEmpty()) {
+                            currentState = KycState.VERIFYING;
+                            updateUIForState();
 
-                        Face liveFace = faces.get(0);
-                        Bitmap fullBitmap = ImageUtils.getBitmap(imageProxy);
-                        if (fullBitmap != null) {
-                            Bitmap croppedFace = cropBitmapToFace(fullBitmap, liveFace.getBoundingBox());
-                            float[] liveEmbedding = faceVerifier.getFaceEmbedding(croppedFace);
-                            Log.d(TAG, "Live face embedding generated.");
+                            Face liveFace = faces.get(0);
+                            Bitmap fullBitmap = ImageUtils.getBitmap(imageProxy);
+                            if (fullBitmap != null) {
+                                Bitmap croppedFace = cropBitmapToFace(fullBitmap, liveFace.getBoundingBox());
+                                float[] liveEmbedding = faceVerifier.getFaceEmbedding(croppedFace);
+                                Log.d(TAG, "Live face embedding generated.");
 
-                            double similarity = faceVerifier.calculateSimilarity(idCardEmbedding, liveEmbedding);
-                            Log.i(TAG, "Face similarity score: " + similarity);
+                                double similarity = faceVerifier.calculateSimilarity(idCardEmbedding, liveEmbedding);
+                                Log.i(TAG, "Face similarity score: " + similarity);
 
-                            if (similarity > FACE_MATCH_THRESHOLD) {
-                                handleVerificationSuccess();
-                            } else {
-                                handleVerificationFailure("Face does not match ID.");
+                                if (similarity > FACE_MATCH_THRESHOLD) {
+                                    handleVerificationSuccess();
+                                } else {
+                                    handleVerificationFailure("Face does not match ID.");
+                                }
                             }
                         }
                     }
@@ -257,10 +272,7 @@ public class KycActivity extends AppCompatActivity {
         for (Text.TextBlock block : visionText.getTextBlocks()) {
             for (Text.Line line : block.getLines()) {
                 String lineText = line.getText();
-                // A more robust check for a name: Two or three words, starting with capitals.
-                // Allows for single-letter middle names or initials.
                 if (lineText.matches("([A-Z][a-zA-Z]*[.]?[ ]?){2,3}")) {
-                     // Additional filter to avoid picking up address lines etc.
                     if (!lineText.matches(".*[0-9].*") && lineText.length() < 30) {
                         Log.d(TAG, "Potential name found: " + lineText);
                         return lineText;
@@ -290,14 +302,20 @@ public class KycActivity extends AppCompatActivity {
             userData.put("verifiedName", verifiedName);
             FirebaseFirestore.getInstance().collection("users").document(user.getUid())
                     .set(userData)
-                    .addOnSuccessListener(aVoid -> {
-                        Toast.makeText(KycActivity.this, "Verification successful!", Toast.LENGTH_LONG).show();
-                        finish();
+                    .addOnSuccessListener(new OnSuccessListener<Void>() {
+                        @Override
+                        public void onSuccess(Void aVoid) {
+                            Toast.makeText(KycActivity.this, "Verification successful!", Toast.LENGTH_LONG).show();
+                            finish();
+                        }
                     })
-                    .addOnFailureListener(e -> {
-                         Toast.makeText(KycActivity.this, "Verification successful, but failed to save name.", Toast.LENGTH_LONG).show();
-                         finish();
-                     });
+                    .addOnFailureListener(new OnFailureListener() {
+                        @Override
+                        public void onFailure(@NonNull Exception e) {
+                            Toast.makeText(KycActivity.this, "Verification successful, but failed to save name.", Toast.LENGTH_LONG).show();
+                            finish();
+                        }
+                    });
         } else {
              Toast.makeText(this, "Verification successful, but no signed-in user found.", Toast.LENGTH_LONG).show();
              finish();
@@ -310,10 +328,50 @@ public class KycActivity extends AppCompatActivity {
         updateUIForState();
         Toast.makeText(this, "Verification Failed: " + reason, Toast.LENGTH_LONG).show();
         
-        new android.os.Handler(Looper.getMainLooper()).postDelayed(this::finish, 3000);
+        new android.os.Handler(Looper.getMainLooper()).postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                finish();
+            }
+        }, 3000);
     }
 
+    // --- NEW: Method to convert an exception to a string for the report ---
+    private String getStackTraceAsString(Exception e) {
+        StringWriter sw = new StringWriter();
+        PrintWriter pw = new PrintWriter(sw);
+        e.printStackTrace(pw);
+        return sw.toString();
+    }
 
+    // --- NEW: Method to show the alert dialog with the crash report ---
+    private void showErrorDialog(Exception e) {
+        if (isFinishing() || isDestroyed()) {
+            return;
+        }
+
+        final String errorReport = getStackTraceAsString(e);
+
+        // We must run this on the UI thread
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                AlertDialog.Builder builder = new AlertDialog.Builder(KycActivity.this);
+                builder.setTitle("KYC Failed: Error Report");
+                builder.setMessage(errorReport);
+                builder.setPositiveButton("Close", new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface dialog, int which) {
+                        dialog.dismiss();
+                        finish(); // Close the activity after user sees the error
+                    }
+                });
+                builder.setCancelable(false); // Prevent dismissing by tapping outside
+                AlertDialog dialog = builder.create();
+                dialog.show();
+            }
+        });
+    }
 
     @Override
     protected void onDestroy() {
