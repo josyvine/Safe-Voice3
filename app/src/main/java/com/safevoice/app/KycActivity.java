@@ -70,6 +70,11 @@ public class KycActivity extends AppCompatActivity {
     private ExecutorService analysisExecutor;
     private FaceVerifier faceVerifier;
 
+    // --- CHANGE START ---
+    // Store the camera provider as a member variable to avoid re-initializing it.
+    private ProcessCameraProvider cameraProvider;
+    // --- CHANGE END ---
+
     // State management variables
     private KycState currentState = KycState.SCANNING_ID;
     private float[] idCardEmbedding = null;
@@ -100,15 +105,25 @@ public class KycActivity extends AppCompatActivity {
         cameraProviderFuture = ProcessCameraProvider.getInstance(this);
         cameraProviderFuture.addListener(() -> {
             try {
-                ProcessCameraProvider cameraProvider = cameraProviderFuture.get();
-                bindCameraUseCases(cameraProvider);
+                // --- CHANGE START ---
+                // Get the camera provider instance and store it in our member variable.
+                this.cameraProvider = cameraProviderFuture.get();
+                // Bind the use cases for the first time (for the back camera).
+                bindCameraUseCases();
+                // --- CHANGE END ---
             } catch (Exception e) {
                 Log.e(TAG, "Failed to start camera.", e);
             }
         }, ContextCompat.getMainExecutor(this));
     }
 
-    private void bindCameraUseCases(@NonNull ProcessCameraProvider cameraProvider) {
+    // --- CHANGE: Method signature no longer needs to accept the provider ---
+    private void bindCameraUseCases() {
+        if (cameraProvider == null) {
+            Log.e(TAG, "Camera provider not available.");
+            return;
+        }
+
         Preview preview = new Preview.Builder().build();
         preview.setSurfaceProvider(binding.cameraPreview.getSurfaceProvider());
 
@@ -121,8 +136,15 @@ public class KycActivity extends AppCompatActivity {
 
         imageAnalysis.setAnalyzer(analysisExecutor, new KycImageAnalyzer());
 
-        cameraProvider.unbindAll();
-        cameraProvider.bindToLifecycle(this, cameraSelector, preview, imageAnalysis);
+        try {
+            // Unbind everything before rebinding
+            cameraProvider.unbindAll();
+            // Bind the new camera selector and use cases
+            cameraProvider.bindToLifecycle(this, cameraSelector, preview, imageAnalysis);
+            Log.d(TAG, "Camera use cases bound successfully.");
+        } catch (Exception e) {
+            Log.e(TAG, "Use case binding failed", e);
+        }
     }
 
     private void updateUIForState() {
@@ -133,7 +155,11 @@ public class KycActivity extends AppCompatActivity {
                     break;
                 case SCANNING_FACE:
                     binding.textInstructions.setText(R.string.kyc_instructions_face);
-                    startCamera(); // Re-bind the camera to switch to the front lens
+                    // --- CHANGE START ---
+                    // Instead of calling startCamera() again, we directly re-bind the use cases.
+                    // This is a much more stable way to switch the camera.
+                    bindCameraUseCases();
+                    // --- CHANGE END ---
                     break;
                 case VERIFYING:
                     binding.textInstructions.setText(R.string.kyc_status_verifying);
@@ -183,13 +209,11 @@ public class KycActivity extends AppCompatActivity {
         }
 
         private Task<Void> processIdCardImage(InputImage image, ImageProxy imageProxy) {
-            // Only run the tasks if we still need the data to avoid redundant work
             Task<Text> textRecognitionTask = (verifiedName == null) ? textRecognizer.process(image) : Tasks.forResult(null);
             Task<List<Face>> faceDetectionTask = (idCardEmbedding == null) ? faceDetector.process(image) : Tasks.forResult(null);
 
             return Tasks.whenAll(textRecognitionTask, faceDetectionTask)
                 .addOnSuccessListener(aVoid -> {
-                    // Process Text Result only if we don't have a name yet
                     if (verifiedName == null) {
                         Text visionText = textRecognitionTask.getResult();
                         if (visionText != null) {
@@ -201,34 +225,18 @@ public class KycActivity extends AppCompatActivity {
                         }
                     }
 
-                    // Process Face Result only if we don't have an embedding yet
                     if (idCardEmbedding == null) {
                         List<Face> faces = faceDetectionTask.getResult();
                         if (faces != null && !faces.isEmpty()) {
                             Face idFace = faces.get(0);
-                            
-                            // --- FIX START ---
-                            // OLD DANGEROUS CODE:
-                            // Bitmap fullBitmap = ImageUtils.getBitmap(imageProxy);
-                            // if (fullBitmap != null) {
-                            //     Bitmap croppedFace = cropBitmapToFace(fullBitmap, idFace.getBoundingBox());
-                            //     idCardEmbedding = faceVerifier.getFaceEmbedding(croppedFace);
-                            //     Log.i(TAG, "Successfully generated ID card embedding.");
-                            // }
-                            
-                            // NEW SAFE CODE:
-                            // Use the efficient cropAndConvert method to avoid OutOfMemoryError.
-                            // This directly creates a small Bitmap of just the face area.
                             Bitmap croppedFace = ImageUtils.cropAndConvert(imageProxy, idFace.getBoundingBox());
                             if (croppedFace != null) {
                                 idCardEmbedding = faceVerifier.getFaceEmbedding(croppedFace);
                                 Log.i(TAG, "Successfully generated ID card embedding.");
                             }
-                            // --- FIX END ---
                         }
                     }
 
-                    // If we have now collected both pieces of information, move to the next state
                     if (verifiedName != null && idCardEmbedding != null) {
                         Log.i(TAG, "ID Scan Complete! Proceeding to face scan.");
                         currentState = KycState.SCANNING_FACE;
@@ -245,17 +253,6 @@ public class KycActivity extends AppCompatActivity {
                         updateUIForState();
 
                         Face liveFace = faces.get(0);
-                        
-                        // --- FIX START ---
-                        // OLD DANGEROUS CODE:
-                        // Bitmap fullBitmap = ImageUtils.getBitmap(imageProxy);
-                        // if (fullBitmap != null) {
-                        //     Bitmap croppedFace = cropBitmapToFace(fullBitmap, liveFace.getBoundingBox());
-                        //     ...
-                        // }
-
-                        // NEW SAFE CODE:
-                        // Use the efficient cropAndConvert method again for the live face scan.
                         Bitmap croppedFace = ImageUtils.cropAndConvert(imageProxy, liveFace.getBoundingBox());
                         if (croppedFace != null) {
                             float[] liveEmbedding = faceVerifier.getFaceEmbedding(croppedFace);
@@ -270,11 +267,9 @@ public class KycActivity extends AppCompatActivity {
                                 handleVerificationFailure("Face does not match ID.");
                             }
                         } else {
-                            // If face couldn't be cropped, revert state to allow retry.
                             currentState = KycState.SCANNING_FACE;
                             updateUIForState();
                         }
-                        // --- FIX END ---
                     }
                 });
         }
@@ -285,10 +280,7 @@ public class KycActivity extends AppCompatActivity {
         for (Text.TextBlock block : visionText.getTextBlocks()) {
             for (Text.Line line : block.getLines()) {
                 String lineText = line.getText();
-                // A more robust check for a name: Two or three words, starting with capitals.
-                // Allows for single-letter middle names or initials.
                 if (lineText.matches("([A-Z][a-zA-Z]*[.]?[ ]?){2,3}")) {
-                     // Additional filter to avoid picking up address lines etc.
                     if (!lineText.matches(".*[0-9].*") && lineText.length() < 30) {
                         Log.d(TAG, "Potential name found: " + lineText);
                         return lineText;
@@ -346,7 +338,6 @@ public class KycActivity extends AppCompatActivity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        // Prevent camera provider future from leaking if activity is destroyed quickly
         if (cameraProviderFuture != null) {
             cameraProviderFuture.cancel(true);
         }
