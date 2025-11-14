@@ -17,10 +17,25 @@ android {
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    // THIS ENTIRE NEW BLOCK IS ADDED TO CONFIGURE YOUR SECRET KEY
+    signingConfigs {
+        release {
+            // This 'if' block ensures these properties are only used when running in a CI environment like GitHub Actions.
+            if (System.getenv("CI")) {
+                storeFile file(System.getenv("KEYSTORE_FILE"))
+                storePassword System.getenv("KEYSTORE_PASSWORD")
+                keyAlias System.getenv("KEY_ALIAS")
+                keyPassword System.getenv("KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            // THIS NEW LINE TELLS THE RELEASE BUILD TO USE YOUR SECRET KEY
+            signingConfig signingConfigs.release
         }
     }
 
@@ -64,7 +79,7 @@ dependencies {
     // --- THIS IS THE FIX ---
     // Added the missing ML Kit Face Detection library
     implementation 'com.google.mlkit:face-detection:16.1.6'
-    
+
     // Google ML Kit for Text Recognition
     implementation 'com.google.mlkit:text-recognition:16.0.0'
 
